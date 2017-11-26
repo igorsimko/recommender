@@ -36,9 +36,9 @@ deal_details_test = pd.read_csv('test_' + __DEAL_DETAILS)
 full_data, grouped_by_users_train, grouped_by_dealitem_id_train = processing.get_proceed_data(activity_train,
                                                                                               deal_items_train,
                                                                                               deal_details_train)
-_, grouped_by_users_test, grouped_by_dealitem_id_test = processing.get_proceed_data(activity_train,
-                                                                                                 deal_items_train,
-                                                                                                 deal_details_train)
+_, grouped_by_users_test, grouped_by_dealitem_id_test = processing.get_proceed_data(activity_test,
+                                                                                                 deal_items_test,
+                                                                                                 deal_details_test)
 
 model = r.Recommender()
 model.fit(grouped_by_users_train, grouped_by_dealitem_id_train)
