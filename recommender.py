@@ -2,123 +2,219 @@ import scipy.spatial.distance as sc
 import datetime
 import cloudpickle as pkl
 import os
+import operator
 
 from utils import *
-from sklearn.metrics import recall_score, precision_score
+from sklearn.metrics import recall_score, precision_score, mean_squared_error
+
+top_N = 10
+MONTH = 2678400
 
 
 class Recommender(object):
-    top_N = 10
-
-    def __init__(self):
+    def __init__(self, actual_time=1):
         self.users_dealitem_ids = {}
         self.dealitem_users_ids = {}
-        self.top_n_items = []
-        self.recall_scores = []
-        self.precision_scores = []
-        self.distance_matrix = []
+        self.coupons_in_time = {}
+        self.deal_items = []
+        self.full_data = []
 
-    def fit(self, grouped_by_users, grouped_by_items, top_N_items=top_N):
+        self.top_n_items = []
+        self.deal_items = []
+        # metrics
+        self.precision_scores_default = []
+        self.precision_scores_top = []
+        self.precision_scores_top_w = []
+
+        self.avg_hits_top_n = []
+        self.avg_hits_top_w = []
+        self.avg_hits_default = []
+
+        self.distance_matrix = []
+        self.actual_time = actual_time
+
+    def fit(self, full_data, grouped_by_users, grouped_by_items, deal_items, deal_details, top_N_items=top_N):
+        metadata = {}
+        file_path = 'metadata.pkl'
+
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as input_file:
+                metadata = pkl.load(input_file)
+        self.full_data = full_data
         self.grouped_by_users_ids = grouped_by_users
         self.grouped_by_items_ids = grouped_by_items
+        self.deal_items = deal_items
 
-        prt("Fitting model with %d users and %d items..." % (len(grouped_by_users), len(grouped_by_items)))
+        self.grouped_by_cities = deal_details.groupby(deal_details['title_city'].str.lower()).groups
 
-        # for user in self.grouped_by_users_ids:
-        #     self.users_dealitem_ids.append({user[0]: list(user[1].groupby('dealitem_id').groups.keys())})
-        #
-        # for user in self.grouped_by_items_ids:
-        #     self.dealitem_users_ids.append({user[0]: list(user[1].groupby('user_id').groups.keys())})
+        if not metadata:
+            prt("Fitting model with %d users and %d items..." % (len(grouped_by_users), len(grouped_by_items)))
 
-        for user in self.grouped_by_users_ids:
-            self.users_dealitem_ids.update({str(user[0]): list(user[1].groupby('dealitem_id').groups.keys())})
+            for user in self.grouped_by_users_ids:
+                self.users_dealitem_ids.update({str(user[0]): list(user[1].groupby('dealitem_id').groups.keys())})
 
-        for item in self.grouped_by_items_ids:
-            self.dealitem_users_ids.update({str(item[0]): list(item[1].groupby('user_id').groups.keys())})
+            for item in self.grouped_by_items_ids:
+                self.dealitem_users_ids.update({str(item[0]): list(item[1].groupby('user_id').groups.keys())})
 
-        # sort deals
-        # self.dealitem_users_ids.sort(key=lambda t: len(self.dealitem_users_ids[t.keys()[0]]), reverse=True)
+            self.top_n_items, self.coupons_in_time = get_top_n_and_coupons(full_data,deal_items,self.actual_time,top_N_items)
 
-        self.top_n_items = list(self.dealitem_users_ids)[:top_N_items]
+            metadata = {
+                'gusers': self.users_dealitem_ids,
+                'gitems': self.dealitem_users_ids,
+                'top': self.top_n_items,
+                'coupons': self.coupons_in_time
+            }
+            with open(file_path, "wb") as output_file:
+                pkl.dump(metadata, output_file)
+        else:
+            self.users_dealitem_ids = metadata['gusers']
+            self.dealitem_users_ids = metadata['gitems']
+            self.top_n_items = metadata['top']
+            self.coupons_in_time = metadata['coupons']
+
         prt("Fitting model finished successfully.")
 
-    def predict(self, x, y, top_N_items=top_N, distance_treshold=0.5, show_null_values=False):
+    def predict(self, activities, y, top_N_items=top_N, distance_treshold=0.4, show_null_values=False):
         prt("Predicting...")
 
-        distance_matrix_file = "distance_matrix.pickle"
+        user_i = 0
+        for user in y:
+            user_i = user_i + 1
+            rec_top_n = False
+            rec_top_n_w = False
+            recommended_items = []
 
-        if os.path.exists(distance_matrix_file):
-            with open(distance_matrix_file, "rb") as input_file:
-                self.distance_matrix = pkl.load(input_file)
+            # new user. recommend top items
+            if str(user[0]) not in self.users_dealitem_ids:
+                rec_top_n = True
+                recommended_items = self.top_n_items
+            else:
+                user_items = self.users_dealitem_ids[str(user[0])]
 
-        if not self.distance_matrix:
-            user_i = 0
-            for user in y:
-                user_i = user_i + 1
-                recommended_items = []
-
-                # new user. recommend top items
-                if str(user[0]) not in self.users_dealitem_ids:
+                if len(user_items) < 1:
                     recommended_items = self.top_n_items
+                    rec_top_n = True
+                elif len(user_items) >= 1 and len(user_items) <= 2:
+                    recommended_items = self.recommend_items(activities.loc[activities['create_time'] >= (self.actual_time - MONTH)], user_items, user[0],
+                                                             distance_treshold=distance_treshold, top_from_user_city=True)
+                    rec_top_n_w = True
                 else:
-                    user_items = self.users_dealitem_ids[str(user[0])]
+                    recommended_items = self.recommend_items(activities, user_items, user[0],
+                                                             distance_treshold=distance_treshold)
 
-                    if len(user_items) < 2:
-                        recommended_items = self.top_n_items
-                    else:
-                        N_items = len(user_items) * 2
-                        recommended_items = self.recommed_items(user_items, user[0], treshold=distance_treshold)
+            if len(recommended_items) < 1:
+                rec_top_n = True
+                recommended_items = self.top_n_items
 
-                u = recommended_items
-                v = list(user[1].groupby('dealitem_id').groups.keys())
+            u = recommended_items
+            v = list(user[1].groupby('dealitem_id').groups.keys())
 
-                y_pred, y_true = get_vectors(u, v)
+            y_pred, y_true = get_vectors(u, v)
 
-                recall = recall_score(y_true, y_pred, average='macro')
-                precision = precision_score(y_true, y_pred, average='macro')
+            precision = precision_score(y_true, y_pred)
+            ndcg = ndcg_score(v, u)
+            mse = mean_squared_error(y_true, y_pred)
 
-                self.recall_scores.append(recall)
-                self.precision_scores.append(precision)
+            hits = 0
+            for rec_item in u:
+                hits += v.count(rec_item)
 
-                hits = 0
-                for rec_item in v:
-                    if rec_item in u:
-                        hits = hits + 1
+            avg_hits = hits / len(v)
 
-                if show_null_values or (hits > 0 and recall != 0 and precision != 0):
-                    prt("User [%d] with precision(%f), recall(%f) and hits(%d/%d) from %d users" % (user[0], precision, recall, hits, len(v), user_i))
+            if show_null_values or (hits > 0):
+                if rec_top_n_w:
+                    self.precision_scores_top_w.append(precision)
+                    self.avg_hits_top_w.append(avg_hits)
+                    print_report('TOP-WITH-USERS',precision, np.average(self.precision_scores_top_w), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_top_w), v)
+                elif rec_top_n:
+                    self.precision_scores_top.append(precision)
+                    self.avg_hits_top_n.append(avg_hits)
+                    print_report('TOP-N\t\t',precision, np.average(self.precision_scores_top), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_top_n), v)
+                else:
+                    self.precision_scores_default.append(precision)
+                    self.avg_hits_default.append(avg_hits)
+                    print_report('DEFAULT\t\t',precision, np.average(self.precision_scores_default), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_default), v)
+            else:
+                if rec_top_n:
+                    self.precision_scores_top.append(precision)
+                    self.avg_hits_top_n.append(avg_hits)
+                elif rec_top_n_w:
+                    self.precision_scores_top_w.append(precision)
+                    self.avg_hits_top_w.append(avg_hits)
+                else:
+                    self.precision_scores_default.append(precision)
+                    self.avg_hits_default.append(avg_hits)
 
-            with open(distance_matrix_file, "wb") as output_file:
-                pkl.dump(self.distance_matrix, output_file)
+        prt("---- Statistics for (%d) users----" % user_i)
+        # prt("users count | avg. default(%f)/%d | avg. top (%f)/%d" % (
+        #     user_i, np.average(self.precision_scores_default), len(self.precision_scores_default),
+        #     np.average(self.precision_scores_top), len(self.precision_scores_top)))
 
-    def recommed_items(self, user_items, user, treshold=0.5):
-        N_items = len(user_items) * 2
+        prt("Avg hits - default: %f | top: %f | top with (%f)" % (np.average(self.avg_hits_default), np.average(self.avg_hits_top_n),np.average(self.avg_hits_top_w)))
+        prt("DEFAULT recommender\t at least one(%d)" % (len(self.avg_hits_default) - list(self.avg_hits_default).count(0)))
+        prt("TOP-N recommender\t at least one(%d)" % (len(self.avg_hits_top_n) - list(self.avg_hits_top_n).count(0)))
+        prt("TOP-WITH-USERS recommender\t at least one(%d)" % (len(self.avg_hits_top_w) - list(self.avg_hits_top_w).count(0)))
+
+
+
+    def recommend_items(self, activities, user_items, user, distance_treshold=0.5, top_from_user_items=False, top_from_user_city=False):
+        N_items = top_N
         similar_user_ids = []
+        user_city = ''
 
+        cities_candidates = []
         for item in user_items:
             similar_user_ids.append(self.dealitem_users_ids[str(item)])
+            if top_from_user_city:
+                cities_users = self.grouped_by_items_ids.get_group(item)[['title_city', 'user_id']]
+                cities_candidates.append(list(cities_users.loc[cities_users['user_id'] == float(user)]['title_city'])[0])
 
         distances = []
+        similar_items = []
         for i in [val for sublist in similar_user_ids for val in sublist]:
+            similar_items.append(self.users_dealitem_ids[str(i)])
             if i != user:
                 u, v = get_vectors(self.users_dealitem_ids[str(i)], user_items)
                 distances.append([i, sc.cosine(u, v)])
 
-        distances.sort(key=lambda t: t[1])
-        self.distance_matrix.append({user: distances[:20]})
-
         recommended_items = []
 
+        if top_from_user_city:
+            ## top from city
+            user_city = max(set(cities_candidates), key=cities_candidates.count)
+            top_n_items, _ = get_top_n_and_coupons(self.full_data.loc[self.full_data['title_city'].str.lower() == str(user_city).lower()], self.deal_items, self.actual_time, top_N)
+            return top_n_items
+
+        if top_from_user_items:
+            ## top from user's items
+            items_count_map = {}
+            for i in [val for sublist in similar_items for val in sublist]:
+                count = 0
+                if str(i) in items_count_map:
+                    count = items_count_map[str(i)] + 1
+                else:
+                    count = 1
+                items_count_map.update({str(i): count})
+
+            for it in sorted(items_count_map.items(), key=operator.itemgetter(1), reverse=True)[:len(self.top_n_items) - 1]:
+                recommended_items.append(it[0])
+
+            return recommended_items
+
+        # default recommender
+        distances.sort(key=lambda t: t[1])
+        self.distance_matrix.append({user: distances[:100]})
+
         for i in distances:
-            # top_df = x.loc[x['user_id'] == i[0]]
-            # top_item = top_df['dealitem_id'].values[0]
             top_items = self.users_dealitem_ids[str(i[0])]
 
             for item in top_items:
                 # not in recommended items.
                 # do not recommend already bought item
-                if item not in recommended_items and item not in user_items and i[0] >= treshold:
-                    recommended_items.append(item)
+                if item not in recommended_items and i[1] <= distance_treshold:
+                    if str(item) in self.coupons_in_time and self.coupons_in_time[str(item)]:
+                        recommended_items.append(item)
+
                 if (len(recommended_items) > N_items):
                     break
 
