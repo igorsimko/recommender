@@ -37,33 +37,22 @@ def print_report(recommender, precision, global_precision, ndcg, mse, user, i, h
         "%s\tUser [%d] with precision(%f), global precision(%f), ndcg(%f), mse(%f), hits(%d/%d), global hits(%f) of %d users " % (
             recommender, user, precision, global_precision, ndcg, mse, hits, len(y_true), avg_hits, i))
 
+def ndcg_at_k(r, k, method=0):
+    dcg_max = dcg_at_k(sorted(r, reverse=True), k, method)
+    if not dcg_max:
+        return 0.
+    return dcg_at_k(r, k, method) / dcg_max
 
-def dcg_score(y_true, y_score, k=5):
-    order = np.argsort(y_score)[::-1]
-    y_true = np.take(y_true, order[:k])
-
-    gain = 2 ** y_true - 1
-
-    discounts = np.log2(np.arange(len(y_true)) + 2)
-    return np.sum(gain / discounts)
-
-
-def ndcg_score(ground_truth, predictions, k=5):
-    lb = LabelBinarizer()
-    lb.fit(range(len(predictions) + 1))
-    T = lb.transform(ground_truth)
-
-    scores = []
-
-    for y_true, y_score in zip(T, predictions):
-        actual = dcg_score(y_true, y_score, k)
-        best = dcg_score(y_true, y_true, k)
-        if float(best) == 0:
-            best = 1
-        score = float(actual) / float(best)
-        scores.append(score)
-
-    return np.mean(scores)
+def dcg_at_k(r, k, method=0):
+    r = np.asfarray(r)[:k]
+    if r.size:
+        if method == 0:
+            return r[0] + np.sum(r[1:] / np.log2(np.arange(2, r.size + 1)))
+        elif method == 1:
+            return np.sum(r / np.log2(np.arange(2, r.size + 2)))
+        else:
+            raise ValueError('method must be 0 or 1.')
+    return 0.
 
 def get_top_n_and_coupons(full_data, deal_items, actual_time, top_n):
     top_n_items = []
@@ -84,3 +73,15 @@ def get_top_n_and_coupons(full_data, deal_items, actual_time, top_n):
             coupons_in_time.update({str(top[0]): valid_time})
 
     return top_n_items, coupons_in_time
+
+
+def add_ndcg(ndcg_arr, value, type='def'):
+    ndcg_list = []
+    if type in ndcg_arr:
+        ndcg_list = list(ndcg_arr[type])
+        ndcg_list.append(value)
+
+    else:
+        ndcg_list.append(value)
+
+    ndcg_arr.update({type: ndcg_list})

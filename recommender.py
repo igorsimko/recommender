@@ -16,6 +16,7 @@ class Recommender(object):
         self.users_dealitem_ids = {}
         self.dealitem_users_ids = {}
         self.coupons_in_time = {}
+        self.ndcg_scores = {}
         self.deal_items = []
         self.full_data = []
 
@@ -74,11 +75,13 @@ class Recommender(object):
 
         prt("Fitting model finished successfully.")
 
-    def predict(self, activities, y, top_N_items=top_N, distance_treshold=0.4, show_null_values=False):
+    def predict(self, activities, y, top_N_items=top_N, distance_treshold=0.4, show_null_values=False, test_count=None):
         prt("Predicting...")
 
         user_i = 0
         for user in y:
+            if test_count and user_i > test_count:
+                break
             user_i = user_i + 1
             rec_top_n = False
             rec_top_n_w = False
@@ -112,7 +115,13 @@ class Recommender(object):
             y_pred, y_true = get_vectors(u, v)
 
             precision = precision_score(y_true, y_pred)
-            ndcg = ndcg_score(v, u)
+
+            ndcg_arr = np.zeros(len(recommended_items))
+            for index, x in enumerate(recommended_items):
+                if x in v:
+                    ndcg_arr[index] = 1
+
+            ndcg = ndcg_at_k(ndcg_arr, 5)
             mse = mean_squared_error(y_true, y_pred)
 
             hits = 0
@@ -123,37 +132,48 @@ class Recommender(object):
 
             if show_null_values or (hits > 0):
                 if rec_top_n_w:
+                    add_ndcg(self.ndcg_scores, ndcg, type='topw')
                     self.precision_scores_top_w.append(precision)
                     self.avg_hits_top_w.append(avg_hits)
-                    print_report('TOP-WITH-USERS',precision, np.average(self.precision_scores_top_w), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_top_w), v)
+                    print_report('TOP-BASED',precision, np.average(self.precision_scores_top_w), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_top_w), v)
                 elif rec_top_n:
+                    add_ndcg(self.ndcg_scores, ndcg, type='topn')
                     self.precision_scores_top.append(precision)
                     self.avg_hits_top_n.append(avg_hits)
-                    print_report('TOP-N\t\t',precision, np.average(self.precision_scores_top), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_top_n), v)
+                    print_report('TOP-N\t',precision, np.average(self.precision_scores_top), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_top_n), v)
                 else:
+                    add_ndcg(self.ndcg_scores, ndcg, type='def')
                     self.precision_scores_default.append(precision)
                     self.avg_hits_default.append(avg_hits)
-                    print_report('DEFAULT\t\t',precision, np.average(self.precision_scores_default), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_default), v)
+                    print_report('DEFAULT\t',precision, np.average(self.precision_scores_default), ndcg, mse, user[0], user_i, hits, np.average(self.avg_hits_default), v)
             else:
                 if rec_top_n:
                     self.precision_scores_top.append(precision)
                     self.avg_hits_top_n.append(avg_hits)
+                    add_ndcg(self.ndcg_scores, ndcg, type='topn')
+
                 elif rec_top_n_w:
                     self.precision_scores_top_w.append(precision)
                     self.avg_hits_top_w.append(avg_hits)
+                    add_ndcg(self.ndcg_scores, ndcg, type='topw')
+
                 else:
                     self.precision_scores_default.append(precision)
                     self.avg_hits_default.append(avg_hits)
+                    add_ndcg(self.ndcg_scores, ndcg, type='def')
+
 
         prt("---- Statistics for (%d) users----" % user_i)
         # prt("users count | avg. default(%f)/%d | avg. top (%f)/%d" % (
         #     user_i, np.average(self.precision_scores_default), len(self.precision_scores_default),
         #     np.average(self.precision_scores_top), len(self.precision_scores_top)))
 
-        prt("Avg hits - default: %f | top: %f | top with (%f)" % (np.average(self.avg_hits_default), np.average(self.avg_hits_top_n),np.average(self.avg_hits_top_w)))
-        prt("DEFAULT recommender\t at least one(%d)" % (len(self.avg_hits_default) - list(self.avg_hits_default).count(0)))
-        prt("TOP-N recommender\t at least one(%d)" % (len(self.avg_hits_top_n) - list(self.avg_hits_top_n).count(0)))
-        prt("TOP-WITH-USERS recommender\t at least one(%d)" % (len(self.avg_hits_top_w) - list(self.avg_hits_top_w).count(0)))
+        prt("Avg hits - default: %f | top: %f | top based: %f" % (np.average(self.avg_hits_default), np.average(self.avg_hits_top_n),np.average(self.avg_hits_top_w)))
+        prt("Avg ndcg-5 - default: %f | top: %f | top based: %f" % (np.average(self.ndcg_scores['def']), np.average(self.ndcg_scores['topn']),np.average(self.ndcg_scores['topw'])))
+
+        prt("DEFAULT recommender\t at least one(%d / %d)" % ((len(self.avg_hits_default) - list(self.avg_hits_default).count(0)),len(self.avg_hits_default) ))
+        prt("TOP-N recommender\t at least one(%d / %d)" % ((len(self.avg_hits_top_n) - list(self.avg_hits_top_n).count(0)),len(self.avg_hits_top_n)))
+        prt("TOP-BASED recommender\t at least one(%d / %d)" % ((len(self.avg_hits_top_w) - list(self.avg_hits_top_w).count(0)), len(self.avg_hits_top_w) ))
 
 
 
